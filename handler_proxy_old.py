@@ -196,15 +196,10 @@ async def generate_openai(job_input: JobInput) -> AsyncGenerator[Dict[str, Any],
         method = "POST"
         payload = job_input.input_data.copy()
     elif openai_route == "/v1/completions" or (job_input.request_type == "completion" and "prompt" in job_input.input_data):
-        # Convert to chat completions (more reliable for GPT-OSS)
-        endpoint = f"http://localhost:{VLLM_PORT}/v1/chat/completions"
+        # Text completions endpoint
+        endpoint = f"http://localhost:{VLLM_PORT}/v1/completions"
         method = "POST"
         payload = job_input.input_data.copy()
-
-        # Convert prompt to messages format
-        if "prompt" in payload and "messages" not in payload:
-            prompt_text = payload.pop("prompt")
-            payload["messages"] = [{"role": "user", "content": prompt_text}]
     elif openai_route == "/v1/chat/completions" or "messages" in job_input.input_data:
         # Chat completions endpoint (default for OpenWebUI)
         endpoint = f"http://localhost:{VLLM_PORT}/v1/chat/completions"

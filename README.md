@@ -1,16 +1,18 @@
-# RunPod Serverless vLLM Handler for GPT-OSS
+# RunPod Serverless vLLM Handler - OpenAI Compatible
 
-This handler runs OpenAI's GPT-OSS models (120B or 20B) on RunPod Serverless using vLLM.
+This handler runs vLLM models on RunPod Serverless with **full OpenAI API compatibility**. Perfect for use with **OpenWebUI** and other OpenAI-compatible clients.
+
+Based on the official [runpod-workers/worker-vllm](https://github.com/runpod-workers/worker-vllm) pattern.
 
 ## Features
 
-- ✅ Automatic model loading from HuggingFace cache or download
-- ✅ OpenAI-compatible API endpoint
-- ✅ Support for both `vllm serve` and legacy command syntax
-- ✅ Real-time vLLM output streaming for debugging
-- ✅ Graceful shutdown handling
-- ✅ RunPod network volume support
-- ✅ Configurable via environment variables
+- ✅ **Full OpenAI API compatibility** - Drop-in replacement for OpenAI API
+- ✅ **Streaming support** - Real-time response streaming
+- ✅ **OpenWebUI ready** - Seamless integration with OpenWebUI
+- ✅ **Smart model loading** - Automatic detection from HuggingFace cache
+- ✅ **Async/await support** - Proper async handling with RunPod
+- ✅ **RunPod optimized** - Network volume support and best practices
+- ✅ **Configurable via environment variables**
 
 ## Environment Variables
 
@@ -68,53 +70,129 @@ docker push your-username/gpt-oss-runpod
 5. Attach the network volume to `/runpod-volume`
 6. Select GPU (A100 80GB or H100 recommended for 120B model)
 
-### 4. Test the Endpoint
+### 4. Connect with OpenWebUI
+
+In OpenWebUI settings:
+
+1. **Connection Type**: OpenAI API
+2. **Base URL**: `https://api.runpod.ai/v2/YOUR-ENDPOINT-ID/openai/v1`
+3. **API Key**: Your RunPod API key
+4. **Model Name**: Match your `MODEL_NAME` env var (e.g., `openai/gpt-oss-120b`)
+
+### 5. Test with Python OpenAI Client
 
 ```python
-import requests
+from openai import OpenAI
 
-url = "https://api.runpod.ai/v2/{YOUR_ENDPOINT_ID}/runsync"
-headers = {
-    "Authorization": "Bearer {YOUR_API_KEY}",
-    "Content-Type": "application/json"
-}
+client = OpenAI(
+    api_key="YOUR_RUNPOD_API_KEY",
+    base_url="https://api.runpod.ai/v2/YOUR-ENDPOINT-ID/openai/v1"
+)
 
-payload = {
-    "input": {
-        "messages": [
-            {"role": "user", "content": "Hello, how are you?"}
-        ],
-        "max_tokens": 256,
-        "temperature": 1.0
-    }
-}
+# Non-streaming
+response = client.chat.completions.create(
+    model="openai/gpt-oss-120b",
+    messages=[
+        {"role": "user", "content": "Hello, how are you?"}
+    ],
+    max_tokens=256,
+    temperature=0.7
+)
+print(response.choices[0].message.content)
 
-response = requests.post(url, json=payload, headers=headers)
-print(response.json())
+# Streaming
+response = client.chat.completions.create(
+    model="openai/gpt-oss-120b",
+    messages=[
+        {"role": "user", "content": "Tell me a story"}
+    ],
+    max_tokens=512,
+    temperature=0.7,
+    stream=True
+)
+
+for chunk in response:
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
 ```
+
+### 6. Test with cURL
+
+```bash
+curl https://api.runpod.ai/v2/YOUR-ENDPOINT-ID/openai/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_RUNPOD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-oss-120b",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 256,
+    "temperature": 0.7
+  }'
+```
+
+## Supported OpenAI Endpoints
+
+**For GPT-OSS Models:**
+- ✅ `/v1/responses` - Tool use with reasoning chains (GPT-OSS recommended)
+- ✅ `/v1/chat/completions` - Chat completions (OpenWebUI default)
+- ✅ `/v1/completions` - Text completions
+- ✅ `/v1/models` - List available models
+
+All endpoints support both streaming and non-streaming modes.
+
+**Note:** The handler automatically routes requests based on content:
+- `messages` → `/v1/chat/completions`
+- `prompt` → `/v1/completions`
+- `openai_route` parameter overrides automatic detection
 
 ## Troubleshooting
 
-### vLLM Command Issues
+### Model Path Errors
 
-**This issue has been fixed!** The handler now defaults to using the legacy `python -m vllm.entrypoints.openai.api_server` syntax, which is compatible with the `vllm/vllm-openai:latest` Docker image.
+**Error:**
+```
+ERROR retrieving safetensors: Repo id must be in the form 'repo_name' or 'namespace/repo_name': '/runpod-volume/huggingface/models--openai--gpt-oss-120b/snapshots/...'
+```
 
-If you still have issues:
+**Solution:** The handler now automatically creates a symlink at `{HF_HOME}/model` to avoid vLLM's repo ID parsing issues. If this still fails:
+- Set `MODEL_PATH` environment variable to point directly to your model directory
+- Ensure the directory contains `config.json` and model weights
 
-1. **Check model path:**
-   - Look for "Found local model at:" in logs
-   - Verify HF_HOME is mounted correctly
+### AsyncIO Errors
 
-2. **Run diagnostic script:**
-   ```bash
-   python test_vllm_command.py
-   ```
+**Error:**
+```
+RuntimeError: asyncio.run() cannot be called from a running event loop
+```
+
+**Solution:** ✅ **Fixed in current version!** The handler now uses proper async/await with RunPod's event loop.
+
+### OpenWebUI Connection Issues
+
+If OpenWebUI can't connect:
+
+1. **Check endpoint URL format:**
+   - Must include `/openai/v1` suffix
+   - Example: `https://api.runpod.ai/v2/abc123xyz/openai/v1`
+
+2. **Verify API key:**
+   - Use your RunPod API key (not OpenAI key)
+   - Find it at: https://www.runpod.io/console/user/settings
+
+3. **Check endpoint status:**
+   - Endpoint must be active (not scaled to zero)
+   - Wait for worker to initialize (~2-5 minutes on first start)
+
+4. **Model name must match:**
+   - Use the same value as `MODEL_NAME` environment variable
+   - Default: `openai/gpt-oss-120b`
 
 ### Model Not Loading
 
-1. **Check HuggingFace token:** Required for gated models
+1. **Check HuggingFace token:** Required for gated/private models
 2. **Verify GPU memory:** 120B model needs ~70GB+ VRAM
 3. **Check network volume:** Model should be cached at `/runpod-volume/huggingface`
+4. **Check logs:** Look for "✓ Found model in..." messages
 
 ### Timeout During Startup
 
@@ -129,46 +207,17 @@ If you still have issues:
 | `openai/gpt-oss-20b` | ~16GB | A100 40GB, L40S |
 | `openai/gpt-oss-120b` | ~70GB | A100 80GB, H100 |
 
-## API Request Format
+## How It Works
 
-```json
-{
-  "input": {
-    "messages": [
-      {"role": "system", "content": "You are a helpful assistant."},
-      {"role": "user", "content": "What is the capital of France?"}
-    ],
-    "max_tokens": 256,
-    "temperature": 1.0,
-    "stream": false
-  }
-}
+This worker follows the official RunPod vLLM worker pattern:
+
+1. **Startup**: Launches vLLM OpenAI API server on container initialization
+2. **Request Handling**: Async handler proxies RunPod requests to vLLM
+3. **Response Streaming**: Uses `return_aggregate_stream=True` for streaming support
+4. **OpenAI Compatibility**: vLLM provides native OpenAI API endpoints
+
 ```
-
-## Response Format
-
-```json
-{
-  "id": "cmpl-...",
-  "object": "chat.completion",
-  "created": 1234567890,
-  "model": "openai/gpt-oss-120b",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "The capital of France is Paris."
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "usage": {
-    "prompt_tokens": 20,
-    "completion_tokens": 8,
-    "total_tokens": 28
-  }
-}
+OpenWebUI/Client → RunPod API → Handler (proxy) → vLLM OpenAI API → Model
 ```
 
 ## Performance Tips
@@ -185,8 +234,38 @@ If you still have issues:
 - `test_vllm_command.py` - Diagnostic tool for vLLM command testing
 - `README.md` - This file
 
+## API Usage Examples
+
+### Direct RunPod API (Alternative)
+
+You can also call RunPod's native API directly:
+
+```python
+import requests
+
+response = requests.post(
+    "https://api.runpod.ai/v2/YOUR-ENDPOINT-ID/runsync",
+    headers={
+        "Authorization": "Bearer YOUR_RUNPOD_API_KEY",
+        "Content-Type": "application/json"
+    },
+    json={
+        "input": {
+            "messages": [{"role": "user", "content": "Hello!"}],
+            "max_tokens": 256,
+            "temperature": 0.7
+        }
+    }
+)
+print(response.json())
+```
+
+But the **OpenAI-compatible endpoint is recommended** for better compatibility with existing tools.
+
 ## References
 
+- [Official RunPod vLLM Worker](https://github.com/runpod-workers/worker-vllm)
+- [RunPod vLLM OpenAI Compatibility Docs](https://docs.runpod.io/serverless/vllm/openai-compatibility)
 - [OpenAI GPT-OSS Cookbook](https://cookbook.openai.com/articles/gpt-oss/run-vllm)
-- [RunPod Serverless Documentation](https://docs.runpod.io/serverless/workers/vllm/overview)
 - [vLLM Documentation](https://docs.vllm.ai/)
+- [OpenWebUI Documentation](https://docs.openwebui.com/)
