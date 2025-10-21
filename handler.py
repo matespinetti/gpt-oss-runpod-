@@ -2,8 +2,6 @@ import os
 import runpod
 import subprocess
 import time
-import asyncio
-import aiohttp
 import json
 import signal
 import sys
@@ -71,16 +69,29 @@ def start_vllm_server():
 
     # Strategy 2: Check HuggingFace cache structure (if not found in custom dir)
     if not found_model:
-        model_cache_path = os.path.join(HF_HOME, "hub", f"models--{MODEL_NAME.replace('/', '--')}")
-        if os.path.exists(model_cache_path):
-            snapshots_dir = os.path.join(model_cache_path, "snapshots")
-            if os.path.exists(snapshots_dir):
-                # Get the first snapshot directory
-                snapshots = [d for d in os.listdir(snapshots_dir) if os.path.isdir(os.path.join(snapshots_dir, d))]
-                if snapshots:
-                    model_arg = os.path.join(snapshots_dir, snapshots[0])
+        # Check both hub/ subdirectory and direct models-- directory
+        possible_cache_paths = [
+            os.path.join(HF_HOME, "hub", f"models--{MODEL_NAME.replace('/', '--')}"),
+            os.path.join(HF_HOME, f"models--{MODEL_NAME.replace('/', '--')}")
+        ]
+        
+        for model_cache_path in possible_cache_paths:
+            if os.path.exists(model_cache_path):
+                snapshots_dir = os.path.join(model_cache_path, "snapshots")
+                if os.path.exists(snapshots_dir):
+                    # Get the first snapshot directory
+                    snapshots = [d for d in os.listdir(snapshots_dir) if os.path.isdir(os.path.join(snapshots_dir, d))]
+                    if snapshots:
+                        model_arg = os.path.join(snapshots_dir, snapshots[0])
+                        found_model = True
+                        print(f"✓ Found model in HF cache: {model_arg}")
+                        break
+                # Also check if the cache directory itself contains model files (some cache structures)
+                elif os.path.exists(os.path.join(model_cache_path, "config.json")):
+                    model_arg = model_cache_path
                     found_model = True
-                    print(f"✓ Found model in HF cache: {model_arg}")
+                    print(f"✓ Found model in HF cache (direct): {model_arg}")
+                    break
 
     # If still not found, use model name (will download)
     if not found_model:
@@ -107,7 +118,7 @@ def start_vllm_server():
     else:
         # Older python -m syntax - more compatible with vllm/vllm-openai Docker images
         cmd = [
-            "python", "-m", "vllm.entrypoints.openai.api_server",
+            "python3", "-m", "vllm.entrypoints.openai.api_server",
             "--model", model_arg,
             "--host", "0.0.0.0",
             "--port", VLLM_PORT,
@@ -185,8 +196,10 @@ def start_vllm_server():
     # If we timeout, raise an error instead of continuing
     raise RuntimeError("vLLM server startup timeout - server did not become healthy in time")
 
-async def call_vllm(messages, max_tokens=256, temperature=1.0, stream=False):
-    """Call local vLLM OpenAI endpoint"""
+def call_vllm(messages, max_tokens=256, temperature=1.0, stream=False):
+    """Call local vLLM OpenAI endpoint using requests"""
+    import requests
+    
     url = f"http://localhost:{VLLM_PORT}/v1/chat/completions"
 
     payload = {
@@ -197,16 +210,17 @@ async def call_vllm(messages, max_tokens=256, temperature=1.0, stream=False):
         "stream": stream,
     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=300)) as response:
-            if response.status == 200:
-                return await response.json()
-            else:
-                error = await response.text()
-                raise Exception(f"vLLM API error ({response.status}): {error}")
+    try:
+        response = requests.post(url, json=payload, timeout=300)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise Exception(f"vLLM API error ({response.status_code}): {response.text}")
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"vLLM API request failed: {str(e)}")
 
-async def handler_async(job):
-    """Async RunPod handler following RunPod best practices"""
+def handler(job):
+    """RunPod handler following RunPod best practices"""
     try:
         job_input = job.get("input", {})
 
@@ -221,7 +235,7 @@ async def handler_async(job):
             return {"error": "No messages provided in input"}
 
         # Call vLLM
-        result = await call_vllm(messages, max_tokens, temperature, stream)
+        result = call_vllm(messages, max_tokens, temperature, stream)
         return result
 
     except Exception as e:
@@ -229,11 +243,6 @@ async def handler_async(job):
         import traceback
         traceback.print_exc()
         return {"error": str(e)}
-
-
-def handler(job):
-    """Synchronous wrapper for RunPod"""
-    return asyncio.run(handler_async(job))
 
 
 def cleanup_handler(signum, frame):
